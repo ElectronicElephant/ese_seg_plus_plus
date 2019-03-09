@@ -87,6 +87,15 @@ coco2017_testdev_dataset = dataset_base.copy({
     'valid_info': './data/coco/annotations/image_info_test-dev2017.json',
 })
 
+cityscapes_fine_dataset = dataset_base.copy({
+    'name': 'cityscapes fine',
+
+    'train_images': './data/cityscapes/images/train/',
+    'valid_images': './data/cityscapes/images/val/',
+    'train_info': '/disk2/fanyix-data/cityscapes/coco_format_annot/instancesonly_filtered_gtFine_train.json',
+    'valid_info': '/disk2/fanyix-data/cityscapes/coco_format_annot/instancesonly_filtered_gtFine_val.json',
+})
+
 # Backbones
 from backbone import ResNetBackbone, VGGBackbone, ResNetBackboneGN, DarkNetBackbone
 from torchvision.models.vgg import cfg as vggcfg
@@ -486,7 +495,6 @@ ssd550_resnet101_yolo_matching_config = ssd550_resnet101_config.copy({
     # is proportional to the number of positives after all.
     'train_masks': False,
 })
-
 
 # Close to vanilla ssd300
 ssd300_config = coco_base_config.copy({
@@ -1048,6 +1056,13 @@ yrm35_retina_config = yrm35_fpn_config.copy({
 
     'positive_iou_threshold': 0.5,
     'negative_iou_threshold': 0.4,
+})
+
+yrm35_retina_cityscapes_config = yrm35_retina_config.copy({
+    'name':  "yrm35_retina_city",
+    'dataset': cityscapes_fine_dataset,
+    'num_classes': 9,                       # This should include the background class
+
 })
 
 yrm35_bigimg_config = yrm35_retina_config.copy({
@@ -1678,7 +1693,7 @@ yrm22_fcis_config = yrm22_config.copy({
 
 
 # Default config
-cfg = yrm36_softmax_config.copy()
+cfg = yrm35_retina_cityscapes_config.copy()
 
 def set_cfg(config_name:str):
     """ Sets the active config. Works even if cfg is already imported! """

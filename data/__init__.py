@@ -1,6 +1,7 @@
 from .voc0712 import VOCDetection, VOCAnnotationTransform, VOC_CLASSES, VOC_ROOT
 
-from .coco import COCODetection, COCOAnnotationTransform, COCO_CLASSES, get_label_map
+# from .coco import COCODetection, COCOAnnotationTransform, COCO_CLASSES, get_label_map
+from .cityscapes import COCODetection, COCOAnnotationTransform, COCO_CLASSES, get_label_map
 from .config import *
 
 import torch

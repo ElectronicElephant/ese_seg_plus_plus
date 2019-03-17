@@ -189,7 +189,6 @@ def train():
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
     
-    
     save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=args.save_folder)
     time_avg = MovingAverage()
 

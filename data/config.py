@@ -1107,6 +1107,12 @@ yrm35_tweakedscales_config = yrm35_moredata_config.copy({
     }),
 })
 
+yrm35_tweakedscales_cityscapes_config = yrm35_tweakedscales_config.copy({
+    'name':  "yrm35_tweakedscales_cityscapes",
+    'dataset': cityscapes_fine_dataset,
+    'num_classes': 9,                       # This should include the background class
+})
+
 yrm35_noaug_config = yrm35_moredata_config.copy({
     'name': 'yrm35_noaug',
 
@@ -1731,7 +1737,7 @@ yrm22_fcis_config = yrm22_config.copy({
 
 
 # Default config
-cfg = yrm35_retina_cityscapes_config.copy()
+cfg = yrm35_tweakedscales_cityscapes_config.copy()
 
 def set_cfg(config_name:str):
     """ Sets the active config. Works even if cfg is already imported! """

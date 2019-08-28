@@ -130,8 +130,8 @@ class PredictionModule(nn.Module):
         self.num_priors = sum(len(x) for x in aspect_ratios)
         self.parent = [parent]  # Don't include this in the state dict
 
-        if cfg.mask_proto_prototypes_as_features:
-            in_channels += self.mask_dim
+        # if cfg.mask_proto_prototypes_as_features:
+        #     in_channels += self.mask_dim
 
         if parent is None:
             if cfg.extra_head_net is None:
@@ -165,8 +165,8 @@ class PredictionModule(nn.Module):
 
             self.bbox_extra, self.conf_extra, self.mask_extra = [make_extra(x) for x in cfg.extra_layers]
 
-            if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_coeff_gate:
-                self.gate_layer = nn.Conv2d(out_channels, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
+            # if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_coeff_gate:
+            #     self.gate_layer = nn.Conv2d(out_channels, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
 
         self.aspect_ratios = aspect_ratios
         self.scales = scales
@@ -229,12 +229,12 @@ class PredictionModule(nn.Module):
         if cfg.eval_mask_branch:
             if cfg.mask_type == mask_type.direct:
                 mask = torch.sigmoid(mask)
-            elif cfg.mask_type == mask_type.lincomb:
-                mask = cfg.mask_proto_coeff_activation(mask)
-
-                if cfg.mask_proto_coeff_gate:
-                    gate = src.gate_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.mask_dim)
-                    mask = mask * torch.sigmoid(gate)
+            # elif cfg.mask_type == mask_type.lincomb:
+            #     mask = cfg.mask_proto_coeff_activation(mask)
+            #
+            #     if cfg.mask_proto_coeff_gate:
+            #         gate = src.gate_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.mask_dim)
+            #         mask = mask * torch.sigmoid(gate)
 
         priors = self.make_priors(conv_h, conv_w)
 
@@ -398,31 +398,31 @@ class Yolact(nn.Module):
         if cfg.freeze_bn:
             self.freeze_bn()
 
-        # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
-        if cfg.mask_type == mask_type.direct:
-            cfg.mask_dim = cfg.mask_size ** 2
-        elif cfg.mask_type == mask_type.lincomb:
-            if cfg.mask_proto_use_grid:
-                self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
-                self.num_grids = self.grid.size(0)
-            else:
-                self.num_grids = 0
-
-            self.proto_src = cfg.mask_proto_src
-
-            if self.proto_src is None:
-                in_channels = 3
-            elif cfg.fpn is not None:
-                in_channels = cfg.fpn.num_features
-            else:
-                in_channels = self.backbone.channels[self.proto_src]
-            in_channels += self.num_grids
-
-            # The include_last_relu=false here is because we might want to change it to another function
-            self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
-
-            if cfg.mask_proto_bias:
-                cfg.mask_dim += 1
+        # # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
+        # if cfg.mask_type == mask_type.direct:
+        #     cfg.mask_dim = cfg.mask_size ** 2
+        # elif cfg.mask_type == mask_type.lincomb:
+        #     if cfg.mask_proto_use_grid:
+        #         self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
+        #         self.num_grids = self.grid.size(0)
+        #     else:
+        #         self.num_grids = 0
+        #
+        #     self.proto_src = cfg.mask_proto_src
+        #
+        #     if self.proto_src is None:
+        #         in_channels = 3
+        #     elif cfg.fpn is not None:
+        #         in_channels = cfg.fpn.num_features
+        #     else:
+        #         in_channels = self.backbone.channels[self.proto_src]
+        #     in_channels += self.num_grids
+        #
+        #     # The include_last_relu=false here is because we might want to change it to another function
+        #     self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
+        #
+        #     if cfg.mask_proto_bias:
+        #         cfg.mask_dim += 1
 
         self.selected_layers = cfg.backbone.selected_layers
         src_channels = self.backbone.channels
@@ -536,32 +536,32 @@ class Yolact(nn.Module):
                 outs = [outs[i] for i in cfg.backbone.selected_layers]
                 outs = self.fpn(outs)
 
-        proto_out = None
-        if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
-            with timer.env('proto'):
-                proto_x = x if self.proto_src is None else outs[self.proto_src]
-
-                if self.num_grids > 0:
-                    grids = self.grid.repeat(proto_x.size(0), 1, 1, 1)
-                    proto_x = torch.cat([proto_x, grids], dim=1)
-
-                proto_out = self.proto_net(proto_x)
-                proto_out = cfg.mask_proto_prototype_activation(proto_out)
-
-                if cfg.mask_proto_prototypes_as_features:
-                    # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary
-                    proto_downsampled = proto_out.clone()
-
-                    if cfg.mask_proto_prototypes_as_features_no_grad:
-                        proto_downsampled = proto_out.detach()
-
-                # Move the features last so the multiplication is easy
-                proto_out = proto_out.permute(0, 2, 3, 1).contiguous()
-
-                if cfg.mask_proto_bias:
-                    bias_shape = [x for x in proto_out.size()]
-                    bias_shape[-1] = 1
-                    proto_out = torch.cat([proto_out, torch.ones(*bias_shape)], -1)
+        # proto_out = None
+        # if cfg.mask_type == mask_type.lincomb and cfg.eval_mask_branch:
+        #     with timer.env('proto'):
+        #         proto_x = x if self.proto_src is None else outs[self.proto_src]
+        #
+        #         if self.num_grids > 0:
+        #             grids = self.grid.repeat(proto_x.size(0), 1, 1, 1)
+        #             proto_x = torch.cat([proto_x, grids], dim=1)
+        #
+        #         proto_out = self.proto_net(proto_x)
+        #         proto_out = cfg.mask_proto_prototype_activation(proto_out)
+        #
+        #         if cfg.mask_proto_prototypes_as_features:
+        #             # Clone here because we don't want to permute this, though idk if contiguous makes this unnecessary
+        #             proto_downsampled = proto_out.clone()
+        #
+        #             if cfg.mask_proto_prototypes_as_features_no_grad:
+        #                 proto_downsampled = proto_out.detach()
+        #
+        #         # Move the features last so the multiplication is easy
+        #         proto_out = proto_out.permute(0, 2, 3, 1).contiguous()
+        #
+        #         if cfg.mask_proto_bias:
+        #             bias_shape = [x for x in proto_out.size()]
+        #             bias_shape[-1] = 1
+        #             proto_out = torch.cat([proto_out, torch.ones(*bias_shape)], -1)
 
         with timer.env('pred_heads'):
             pred_outs = {'loc': [], 'conf': [], 'mask': [], 'priors': []}
@@ -572,11 +572,11 @@ class Yolact(nn.Module):
             for idx, pred_layer in zip(self.selected_layers, self.prediction_layers):
                 pred_x = outs[idx]
 
-                if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_prototypes_as_features:
-                    # Scale the prototypes down to the current prediction layer's size and add it as inputs
-                    proto_downsampled = F.interpolate(proto_downsampled, size=outs[idx].size()[2:], mode='bilinear',
-                                                      align_corners=False)
-                    pred_x = torch.cat([pred_x, proto_downsampled], dim=1)
+                # if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_prototypes_as_features:
+                #     # Scale the prototypes down to the current prediction layer's size and add it as inputs
+                #     proto_downsampled = F.interpolate(proto_downsampled, size=outs[idx].size()[2:], mode='bilinear',
+                #                                       align_corners=False)
+                #     pred_x = torch.cat([pred_x, proto_downsampled], dim=1)
 
                 # A hack for the way dataparallel works
                 if cfg.share_prediction_module and pred_layer is not self.prediction_layers[0]:
@@ -590,8 +590,8 @@ class Yolact(nn.Module):
         for k, v in pred_outs.items():
             pred_outs[k] = torch.cat(v, -2)
 
-        if proto_out is not None:
-            pred_outs['proto'] = proto_out
+        # if proto_out is not None:
+        #     pred_outs['proto'] = proto_out
 
         if self.training:
 

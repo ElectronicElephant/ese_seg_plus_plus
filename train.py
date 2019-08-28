@@ -19,23 +19,39 @@ import torch.utils.data as data
 import numpy as np
 import argparse
 import datetime
+from PIL import Image
 
 # Oof
 import eval as eval_script
 
+
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
 
+
+# Config about bases
+coco_2017_cat = {1: 'person', 2: 'bicycle', 3: 'car', 4: 'motorcycle', 5: 'airplane', 6: 'bus', 7: 'train', 8: 'truck',
+                 9: 'boat', 10: 'traffic light', 11: 'fire hydrant', 13: 'stop sign', 14: 'parking meter', 15: 'bench',
+                 16: 'bird', 17: 'cat', 18: 'dog', 19: 'horse', 20: 'sheep', 21: 'cow', 22: 'elephant', 23: 'bear',
+                 24: 'zebra', 25: 'giraffe', 27: 'backpack', 28: 'umbrella', 31: 'handbag', 32: 'tie', 33: 'suitcase',
+                 34: 'frisbee', 35: 'skis', 36: 'snowboard', 37: 'sports ball', 38: 'kite', 39: 'baseball bat',
+                 40: 'baseball glove', 41: 'skateboard', 42: 'surfboard', 43: 'tennis racket', 44: 'bottle',
+                 46: 'wine glass', 47: 'cup', 48: 'fork', 49: 'knife', 50: 'spoon', 51: 'bowl', 52: 'banana',
+                 53: 'apple', 54: 'sandwich', 55: 'orange', 56: 'broccoli', 57: 'carrot', 58: 'hot dog', 59: 'pizza',
+                 60: 'donut', 61: 'cake', 62: 'chair', 63: 'couch', 64: 'potted plant', 65: 'bed', 67: 'dining table',
+                 70: 'toilet', 72: 'tv', 73: 'laptop', 74: 'mouse', 75: 'remote', 76: 'keyboard', 77: 'cell phone',
+                 78: 'microwave', 79: 'oven', 80: 'toaster', 81: 'sink', 82: 'refrigerator', 84: 'book', 85: 'clock',
+                 86: 'vase', 87: 'scissors', 88: 'teddy bear', 89: 'hair drier', 90: 'toothbrush'}
 
 parser = argparse.ArgumentParser(
     description='Yolact Training Script')
 parser.add_argument('--batch_size', default=8, type=int,
                     help='Batch size for training')
 parser.add_argument('--resume', default=None, type=str,
-                    help='Checkpoint state_dict file to resume training from. If this is "interrupt"'\
+                    help='Checkpoint state_dict file to resume training from. If this is "interrupt"' \
                          ', the model will resume training from the interrupt file.')
 parser.add_argument('--start_iter', default=0, type=int,
-                    help='Resume training at this iter. If this is -1, the iteration will be'\
+                    help='Resume training at this iter. If this is -1, the iteration will be' \
                          'determined from the file name.')
 parser.add_argument('--num_workers', default=4, type=int,
                     help='Number of workers used in dataloading')
@@ -75,9 +91,12 @@ if args.config is not None:
 if args.dataset is not None:
     set_dataset(args.dataset)
 
+
 # Update training parameters from the config if necessary
 def replace(name):
     if getattr(args, name) == None: setattr(args, name, getattr(cfg, name))
+
+
 replace('lr')
 replace('decay')
 replace('gamma')
@@ -95,20 +114,24 @@ if torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
+
 class ScatterWrapper:
     """ Input is any number of lists. This will preserve them through a dataparallel scatter. """
+
     def __init__(self, *args):
         for arg in args:
             if not isinstance(arg, list):
                 print('Warning: ScatterWrapper got input of non-list type.')
         self.args = args
         self.batch_size = len(args[0])
-    
+
     def make_mask(self):
         out = torch.Tensor(list(range(self.batch_size))).long()
-        if args.cuda: return out.cuda()
-        else: return out
-    
+        if args.cuda:
+            return out.cuda()
+        else:
+            return out
+
     def get_args(self, mask):
         device = mask.device
         mask = [int(x) for x in mask]
@@ -120,10 +143,22 @@ class ScatterWrapper:
                 if isinstance(x, torch.Tensor):
                     x = x.to(device)
                 out.append(x)
-        
+
         return out_args
 
-        
+
+def readBases(path, cat_dict, cat_id, scale=(64, 64)):
+    """
+    From Wenqiang
+    """
+    path += ("_" + str(scale[0]) + "_" + str(scale[1]))
+    base_list = os.listdir(path + "/" + cat_dict[cat_id])
+    all_bases = np.zeros((len(base_list), scale[0] * scale[1]))
+    for i in range(len(base_list)):
+        basis = np.array(Image.open(path + "/" + cat_dict[cat_id] + "/" + base_list[i]))
+        all_bases[i] = basis.flatten()
+    return all_bases
+
 
 def train():
     if not os.path.exists(args.save_folder):
@@ -132,7 +167,7 @@ def train():
     dataset = COCODetection(image_path=cfg.dataset.train_images,
                             info_file=cfg.dataset.train_info,
                             transform=SSDAugmentation(MEANS))
-    
+
     if args.validation_epoch > 0:
         setup_eval()
         val_dataset = COCODetection(image_path=cfg.dataset.valid_images,
@@ -173,7 +208,7 @@ def train():
 
     if args.cuda:
         cudnn.benchmark = True
-        net       = nn.DataParallel(net).cuda()
+        net = nn.DataParallel(net).cuda()
         criterion = nn.DataParallel(criterion).cuda()
 
     # loss counters
@@ -184,7 +219,7 @@ def train():
 
     epoch_size = len(dataset) // args.batch_size
     num_epochs = math.ceil(cfg.max_iter / epoch_size)
-    
+
     # Which learning rate adjustment step are we on? lr' = lr * gamma ^ step_index
     step_index = 0
 
@@ -192,13 +227,20 @@ def train():
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
-    
-    
+
     save_path = lambda epoch, iteration: SavePath(cfg.name, epoch, iteration).get_path(root=args.save_folder)
     time_avg = MovingAverage()
 
-    global loss_types # Forms the print order
-    loss_avgs  = { k: MovingAverage(100) for k in loss_types }
+    global loss_types  # Forms the print order
+    loss_avgs = {k: MovingAverage(100) for k in loss_types}
+
+    # Read bases
+    bases_loc = r'data/bases/XXXXX'
+    all_bases = {}
+    print('Loading predefined bases...')
+    for cat_id_ in coco_2017_cat.keys():
+        bases = readBases(bases_loc, coco_2017_cat, cat_id=cat_id_, scale=(64, 64))
+        all_bases[cat_id_] = (bases.copy())
 
     print('Begin training!')
     print()
@@ -206,13 +248,12 @@ def train():
     try:
         for epoch in range(num_epochs):
             # Resume from start_iter
-            if (epoch+1)*epoch_size < iteration:
+            if (epoch + 1) * epoch_size < iteration:
                 continue
 
-            
             for datum in data_loader:
                 # Stop if we've reached an epoch if we're resuming from start_iter
-                if iteration == (epoch+1)*epoch_size:
+                if iteration == (epoch + 1) * epoch_size:
                     break
 
                 # Stop at the configured number of iterations even if mid-epoch
@@ -229,14 +270,15 @@ def train():
                         # Reset the loss averages because things might have changed
                         for avg in loss_avgs:
                             avg.reset()
-                
+
                 # If a config setting was changed, remove it from the list so we don't keep checking
                 if changed:
                     cfg.delayed_settings = [x for x in cfg.delayed_settings if x[0] > iteration]
 
                 # Warm up by linearly interpolating the learning rate from some smaller value
                 if cfg.lr_warmup_until > 0 and iteration <= cfg.lr_warmup_until:
-                    set_lr(optimizer, (args.lr - cfg.lr_warmup_init) * (iteration / cfg.lr_warmup_until) + cfg.lr_warmup_init)
+                    set_lr(optimizer,
+                           (args.lr - cfg.lr_warmup_init) * (iteration / cfg.lr_warmup_until) + cfg.lr_warmup_init)
 
                 # Adjust the learning rate at the given iterations, but also if we resume from past that iteration
                 while step_index < len(cfg.lr_steps) and iteration >= cfg.lr_steps[step_index]:
@@ -246,30 +288,31 @@ def train():
                 # Load training data
                 # Note, for training on multiple gpus this will use the custom replicate and gather I wrote up there
                 images, targets, masks, num_crowds = prepare_data(datum)
-                
+
                 # Forward Pass
                 out = net(images)
-                
+
                 # Compute Loss
                 optimizer.zero_grad()
-                
-                wrapper = ScatterWrapper(targets, masks, num_crowds)
+
+                wrapper = ScatterWrapper(targets, masks, num_crowds, [all_bases])
+                # Here, to use wrapper, I have to wrap the dict of bases in a list - May Cause Problems
                 losses = criterion(out, wrapper, wrapper.make_mask())
-                
-                losses = { k: v.mean() for k,v in losses.items() } # Mean here because Dataparallel
+
+                losses = {k: v.mean() for k, v in losses.items()}  # Mean here because Dataparallel
                 loss = sum([losses[k] for k in losses])
-                
+
                 # Backprop
-                loss.backward() # Do this to free up vram even if loss is not finite
+                loss.backward()  # Do this to free up vram even if loss is not finite
                 if torch.isfinite(loss).item():
                     optimizer.step()
-                
+
                 # Add the loss to the moving average for bookkeeping
                 for k in losses:
                     loss_avgs[k].add(losses[k].item())
 
-                cur_time  = time.time()
-                elapsed   = cur_time - last_time
+                cur_time = time.time()
+                elapsed = cur_time - last_time
                 last_time = cur_time
 
                 # Exclude graph setup from the timing information
@@ -277,14 +320,15 @@ def train():
                     time_avg.add(elapsed)
 
                 if iteration % 10 == 0:
-                    eta_str = str(datetime.timedelta(seconds=(cfg.max_iter-iteration) * time_avg.get_avg())).split('.')[0]
-                    
+                    eta_str = \
+                        str(datetime.timedelta(seconds=(cfg.max_iter - iteration) * time_avg.get_avg())).split('.')[0]
+
                     total = sum([loss_avgs[k].get_avg() for k in losses])
                     loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
-                    
+
                     print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
-                            % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
-                
+                          % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
+
                 iteration += 1
 
                 if iteration % args.save_interval == 0 and iteration != args.start_iter:
@@ -298,17 +342,17 @@ def train():
                         if args.keep_latest_interval <= 0 or iteration % args.keep_latest_interval != args.save_interval:
                             print('Deleting old save...')
                             os.remove(latest)
-            
+
             # This is done per epoch
             if args.validation_epoch > 0:
                 if epoch % args.validation_epoch == 0 and epoch > 0:
                     compute_validation_map(yolact_net, val_dataset)
     except KeyboardInterrupt:
         print('Stopping early. Saving network...')
-        
+
         # Delete previous copy of the interrupted network so we don't spam the weights folder
         SavePath.remove_interrupt(args.save_folder)
-        
+
         yolact_net.save_weights(save_path(epoch, repr(iteration) + '_interrupt'))
         exit()
 
@@ -322,7 +366,7 @@ def set_lr(optimizer, new_lr):
 
 def prepare_data(datum):
     images, (targets, masks, num_crowds) = datum
-    
+
     if args.cuda:
         images = Variable(images.cuda(), requires_grad=False)
         targets = [Variable(ann.cuda(), requires_grad=False) for ann in targets]
@@ -334,12 +378,13 @@ def prepare_data(datum):
 
     return images, targets, masks, num_crowds
 
+
 def compute_validation_loss(net, data_loader, criterion):
     global loss_types
 
     with torch.no_grad():
         losses = {}
-        
+
         # Don't switch to eval mode because we want to get losses
         iterations = 0
         for datum in data_loader:
@@ -348,7 +393,7 @@ def compute_validation_loss(net, data_loader, criterion):
 
             wrapper = ScatterWrapper(targets, masks, num_crowds)
             _losses = criterion(out, wrapper, wrapper.make_mask())
-            
+
             for k, v in _losses.items():
                 v = v.mean().item()
                 if k in losses:
@@ -359,13 +404,13 @@ def compute_validation_loss(net, data_loader, criterion):
             iterations += 1
             if args.validation_size <= iterations * args.batch_size:
                 break
-        
+
         for k in losses:
             losses[k] /= iterations
-            
-        
+
         loss_labels = sum([[k, losses[k]] for k in loss_types if k in losses], [])
         print(('Validation ||' + (' %s: %.3f |' * len(losses)) + ')') % tuple(loss_labels), flush=True)
+
 
 def compute_validation_map(yolact_net, dataset):
     with torch.no_grad():
@@ -375,8 +420,10 @@ def compute_validation_map(yolact_net, dataset):
         eval_script.evaluate(yolact_net, dataset, train_mode=True)
         yolact_net.train()
 
+
 def setup_eval():
-    eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
+    eval_script.parse_args(['--no_bar', '--max_images=' + str(args.validation_size)])
+
 
 if __name__ == '__main__':
     train()

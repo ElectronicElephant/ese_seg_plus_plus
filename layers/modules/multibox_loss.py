@@ -72,8 +72,9 @@ class MultiBoxLoss(nn.Module):
         mask_data = predictions['mask']
         priors = predictions['priors']
 
-        if cfg.mask_type == mask_type.lincomb:
-            proto_data = predictions['proto']
+        # if cfg.mask_type == mask_type.lincomb:
+        #     proto_data = predictions['proto']
+        # Tutian: We should get the cat for each bbox first and then load the bases
 
         if cfg.use_instance_coeff:
             inst_data = predictions['inst']
@@ -434,6 +435,7 @@ class MultiBoxLoss(nn.Module):
                           interpolation_mode='bilinear'):
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
+        # 推测 proto_data 的 shape 是 (batch_size, h, w)
 
         process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
 

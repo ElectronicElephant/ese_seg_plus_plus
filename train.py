@@ -118,6 +118,8 @@ else:
 class ScatterWrapper:
     """ Input is any number of lists. This will preserve them through a dataparallel scatter. """
 
+    bases_dict = coco_2017_cat
+
     def __init__(self, *args):
         for arg in args:
             if not isinstance(arg, list):
@@ -146,6 +148,17 @@ class ScatterWrapper:
 
         return out_args
 
+    @staticmethod
+    def get_bases(cat_id):
+        """
+
+        :param cat_id:
+        :return: a list of bases
+
+        The baese are in (4096,) shape
+        """
+        return ScatterWrapper.bases_dict[cat_id]
+
 
 def readBases(path, cat_dict, cat_id, scale=(64, 64)):
     """
@@ -157,6 +170,7 @@ def readBases(path, cat_dict, cat_id, scale=(64, 64)):
     for i in range(len(base_list)):
         basis = np.array(Image.open(path + "/" + cat_dict[cat_id] + "/" + base_list[i]))
         all_bases[i] = basis.flatten()
+        # Should be (4096,) after flatten?
     return all_bases
 
 
@@ -295,9 +309,11 @@ def train():
                 # Compute Loss
                 optimizer.zero_grad()
 
-                wrapper = ScatterWrapper(targets, masks, num_crowds, [all_bases])
+                wrapper = ScatterWrapper(targets, masks, num_crowds)
                 # Here, to use wrapper, I have to wrap the dict of bases in a list - May Cause Problems
+                # Update: deprecated. Now the bases is static class member
                 losses = criterion(out, wrapper, wrapper.make_mask())
+                # def forward(self, predictions, wrapper, wrapper_mask)
 
                 losses = {k: v.mean() for k, v in losses.items()}  # Mean here because Dataparallel
                 loss = sum([losses[k] for k in losses])
@@ -380,6 +396,7 @@ def prepare_data(datum):
 
 
 def compute_validation_loss(net, data_loader, criterion):
+    # 此函数没有被调用？？？
     global loss_types
 
     with torch.no_grad():
@@ -391,6 +408,7 @@ def compute_validation_loss(net, data_loader, criterion):
             images, targets, masks, num_crowds = prepare_data(datum)
             out = net(images)
 
+            # 暂时没有改这里的 Wrapper
             wrapper = ScatterWrapper(targets, masks, num_crowds)
             _losses = criterion(out, wrapper, wrapper.make_mask())
 

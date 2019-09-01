@@ -197,6 +197,7 @@ def encode(matched, priors, use_yolo_regressors:bool=False):
     """
 
     if use_yolo_regressors:
+        # FALSE BY DEFAULT
         # Exactly the reverse of what we did in decode
         # In fact encode(decode(x, p), p) should be x
         boxes = center_size(matched)

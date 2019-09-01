@@ -310,8 +310,8 @@ def train():
                 optimizer.zero_grad()
 
                 wrapper = ScatterWrapper(targets, masks, num_crowds)
-                # Here, to use wrapper, I have to wrap the dict of bases in a list - May Cause Problems
-                # Update: deprecated. Now the bases is static class member
+                # Here, to use wrapper, I have to wrap the dict of bases in a list - May Cause Problems [Deprecated]
+                # Update: Now the bases is static class member
                 losses = criterion(out, wrapper, wrapper.make_mask())
                 # def forward(self, predictions, wrapper, wrapper_mask)
 

@@ -57,6 +57,7 @@ class MultiBoxLoss(nn.Module):
 
             targets (list<tensor>): Ground truth boxes and labels for a batch,
                 shape: [batch_size][num_objs,5] (last idx is the label).
+                Tutian: Perhaps is [xmin, ymin, xmax, ymax, label_idx]
 
             masks (list<tensor>): Ground truth masks for each object in each image,
                 shape: [batch_size][num_objs,im_height,im_width]
@@ -66,6 +67,24 @@ class MultiBoxLoss(nn.Module):
             
             * Only if mask_type == lincomb
         """
+
+        #              loc_data: (tensor) Loc preds from loc layers
+        #                 Shape: [batch, num_priors, 4]
+        #             conf_data: (tensor) Shape: Conf preds from conf layers
+        #                 Shape: [batch, num_priors, num_classes]
+        #             mask_data: (tensor) Mask preds from mask layers
+        #                 Shape: [batch, num_priors, mask_dim]
+        #             prior_data: (tensor) Prior boxes and variances from priorbox layers
+        #                 Shape: [num_priors, 4]
+        #             proto_data: (tensor) If using mask_type.lincomb, the prototype masks
+        #                 Shape: [batch, mask_h, mask_w, mask_dim]
+
+        # Additional information for mask_data:
+        # pos_mask_data = mask_data[idx, cur_pos_idx_squeezed, :]
+        # proto_masks = proto_data[idx]
+        # proto_coef = mask_data[idx, cur_pos, :]
+        # 所以 mask_data 应当就是 proto_coef
+
 
         loc_data = predictions['loc']
         conf_data = predictions['conf']
@@ -82,6 +101,22 @@ class MultiBoxLoss(nn.Module):
             inst_data = None
 
         targets, masks, num_crowds = wrapper.get_args(wrapper_mask)
+        # Here is the generator of target:
+        #     def loadAnns(self, ids=[]):
+        #         """
+        #         Load anns with the specified ids.
+        #         :param ids (int array)       : integer ids specifying anns
+        #         :return: anns (object array) : loaded ann objects
+        #         """
+        #         if _isArrayLike(ids):
+        #             return [self.anns[id] for id in ids]
+        #         elif type(ids) == int:
+        #             return [self.anns[ids]]
+
+        # Here is the generator of masks:
+        # # Pool all the masks for this image into one [num_objects,height,width] matrix
+        #             masks = [self.coco.annToMask(obj).reshape(-1) for obj in target]
+        # mask is binary mask (numpy 2D array)
         labels = [None] * len(targets)  # Used in sem segm loss
 
         batch_size = loc_data.size(0)
@@ -97,6 +132,10 @@ class MultiBoxLoss(nn.Module):
         gt_box_t = loc_data.new(batch_size, num_priors, 4)
         conf_t = loc_data.new(batch_size, num_priors).long()
         idx_t = loc_data.new(batch_size, num_priors).long()
+        # New (Blank or Random) Tensors Created
+        #         loc_t: (tensor) Tensor to be filled w/ endcoded location targets.
+        #         conf_t: (tensor) Tensor to be filled w/ matched indices for conf preds. Note: -1 means neutral.
+        #         idx_t: (tensor) Tensor to be filled w/ the index of the matched gt box for each prior.
 
         defaults = priors.data
 
@@ -111,7 +150,7 @@ class MultiBoxLoss(nn.Module):
                 # Construct a one-hot vector for each object and collapse it into an existence vector with max
                 # Also it's fine to include the crowd annotations here
                 class_existence_t[idx, :] = \
-                torch.eye(num_classes - 1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
+                    torch.eye(num_classes - 1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
 
             # Split the crowd annotations because they come bundled in
             cur_crowds = num_crowds[idx]
@@ -125,11 +164,21 @@ class MultiBoxLoss(nn.Module):
             else:
                 crowd_boxes = None
 
+            #  (Match each prior box with the ground truth box of the highest jaccard
+            #     overlap, encode the bounding boxes, then return the matched indices
+            #     corresponding to both confidence and location preds.)
             match(self.pos_threshold, self.neg_threshold,
                   truths, defaults, labels[idx], crowd_boxes,
                   loc_t, conf_t, idx_t, idx, loc_data[idx])
 
+            # Bounding Box 的预编码方法非常简单，就是 Linear
+            # scale = np.array([width, height, width, height])
+            # final_box = list(np.array([bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]])/scale)
+            # # [xmin, ymin, xmax, ymax, label_idx]
+
             gt_box_t[idx, :, :] = truths[idx_t[idx]]
+
+        # Match ends.
 
         # wrap targets
         loc_t = Variable(loc_t, requires_grad=False)
@@ -151,7 +200,11 @@ class MultiBoxLoss(nn.Module):
             losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * cfg.bbox_alpha
 
         if cfg.train_masks:
+            # Direct:
+            # Direct produces masks directly as the output of each pred module.
+            # This is denoted as fc-mask in the paper.
             if cfg.mask_type == mask_type.direct:
+                # print("[Warning] fc-mask USED! In multibox_loss.py Line. 185 - Tutian")
                 if cfg.use_gt_bboxes:
                     pos_masks = []
                     for idx in range(batch_size):
@@ -162,16 +215,21 @@ class MultiBoxLoss(nn.Module):
                                                          reduction='sum') * cfg.mask_alpha
                 else:
                     losses['M'] = self.direct_mask_loss(pos_idx, idx_t, loc_data, mask_data, priors, masks)
+            # 在训练中，应当进这个 elif
             elif cfg.mask_type == mask_type.lincomb:
                 losses.update(
-                    self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t,
-                                           inst_data))
+                    self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, wrapper, masks, gt_box_t,
+                                           inst_data, labels))
+                #     loc_t[idx]  = loc    # [num_priors,4] encoded offsets to learn
+                #     conf_t[idx] = conf   # [num_priors] top class label for each prior
+                #     idx_t[idx]  = best_truth_idx # [num_priors] indices for lookup
 
-                if cfg.mask_proto_loss is not None:
-                    if cfg.mask_proto_loss == 'l1':
-                        losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
-                    elif cfg.mask_proto_loss == 'disj':
-                        losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
+                # Default config makes it None
+                # if cfg.mask_proto_loss is not None:
+                #     if cfg.mask_proto_loss == 'l1':
+                #         losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
+                #     elif cfg.mask_proto_loss == 'disj':
+                #         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
 
         # Confidence loss
         if cfg.use_focal_loss:
@@ -186,8 +244,10 @@ class MultiBoxLoss(nn.Module):
 
         # These losses also don't depend on anchors
         if cfg.use_class_existence_loss:
+            # False
             losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
         if cfg.use_semantic_segmentation_loss:
+            # True by default
             losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
 
         # Divide all losses by the number of positives.
@@ -431,11 +491,53 @@ class MultiBoxLoss(nn.Module):
         # and all the losses will be divided by num_pos at the end, so just one extra time.
         return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
 
-    def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, inst_data,
+    def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, wrapper, masks, gt_box_t, inst_data, labels,
                           interpolation_mode='bilinear'):
-        mask_h = proto_data.size(1)
-        mask_w = proto_data.size(2)
+        """
+
+        :param pos:
+        :param idx_t:
+        :param loc_data:
+        :param mask_data:
+        :param priors:
+        :param wrapper:
+        :param masks: masks from GT
+        :param gt_box_t:
+        :param inst_data:
+        :param labels: A Python-List!!!
+        :param interpolation_mode:
+        :return:
+        """
+        # mask_h = proto_data.size(1)
+        # mask_w = proto_data.size(2)
         # 推测 proto_data 的 shape 是 (batch_size, h, w)
+        mask_h, mask_w = 550, 550
+        # 需要验证
+        # 默认配置下 proto_data.size 为 torch.Size([1, 138, 138, 32])
+        # mask_data.size() torch.Size([1, 19248, 32])
+
+        # GT_BBOX
+        # gt_box_t tensor([[[0.6272, 0.2766, 0.8167, 0.8574],
+        #          [0.6272, 0.2766, 0.8167, 0.8574],
+        #          [0.6272, 0.2766, 0.8167, 0.8574],
+        #          ...,
+        #          [0.7971, 0.2935, 0.9717, 0.9171],
+        #          [0.7971, 0.2935, 0.9717, 0.9171],
+        #          [0.7971, 0.2935, 0.9717, 0.9171]]]), gt_box_t.size() torch.Size([1, 19248, 4])
+        # gt_box_t tensor([[[0., 0., 1., 1.],
+        #          [0., 0., 1., 1.],
+        #          [0., 0., 1., 1.],
+        #          ...,
+        #          [0., 0., 1., 1.],
+        #          [0., 0., 1., 1.],
+        #          [0., 0., 1., 1.]]]), gt_box_t.size() torch.Size([1, 19248, 4])
+        # gt_box_t tensor([[[0.5586, 0.1830, 0.8400, 0.7821],
+        #          [0.5586, 0.1830, 0.8400, 0.7821],
+        #          [0.5586, 0.1830, 0.8400, 0.7821],
+        #          ...,
+        #          [0.5586, 0.1830, 0.8400, 0.7821],
+        #          [0.5586, 0.1830, 0.8400, 0.7821],
+        #          [0.5586, 0.1830, 0.8400, 0.7821]]]), gt_box_t.size() torch.Size([1, 19248, 4])
 
         process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
 
@@ -446,8 +548,11 @@ class MultiBoxLoss(nn.Module):
         loss_m = 0
         loss_d = 0  # Coefficient diversity loss
 
-        for idx in range(mask_data.size(0)):
+        for idx in range(mask_data.size(0)):  # 也即是 batch size --- confirmed
             with torch.no_grad():
+                # 似乎作用是把 GT mask downsample 到网络输出大小 - 550 by 550 by default [有问题]
+                # masks[idx].size() torch.Size([5, 550, 550]) -> downsampled_masks.size() torch.Size([138, 138, 5])
+                # 5 应该是每张图片中 seg 的数量
                 downsampled_masks = F.interpolate(masks[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
                 downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
@@ -477,6 +582,13 @@ class MultiBoxLoss(nn.Module):
 
             cur_pos = pos[idx]
             pos_idx_t = idx_t[idx, cur_pos]
+            # pos tensor([[False, False, False,  ..., False, False, False]]),
+            # pos.size() torch.Size([1, 19248]),
+            # cur_pos tensor([False, False, False,  ..., False, False, False]),
+            # pos_idx_t tensor([ 6,  9, 18, 22,  0,  0, 12, 20, 21, 19,  0,  0,  1,  1,  1,  7, 14,  1,
+            #         14, 14, 11,  5, 13,  8, 10,  2,  4,  3, 15, 16,  0,  0,  0,  0,  1, 17,
+            #         17])
+            # cur_pos.size torch.Size([19248]), idx_t.size torch.Size([1, 19248]), pos_idx_t.size torch.Size([43])
 
             if process_gt_bboxes:
                 # Note: this is in point-form
@@ -485,7 +597,9 @@ class MultiBoxLoss(nn.Module):
             if pos_idx_t.size(0) == 0:
                 continue
 
-            proto_masks = proto_data[idx]
+            # proto_masks = proto_data[idx]
+            # bases = wrapper.get_bases(idx_t[idx])  # 有问题： idx 并不是 cat_id [Deprecated]
+            bases = wrapper.get_bases(labels[idx_t[idx]])  # 验证 pending
             proto_coef = mask_data[idx, cur_pos, :]
 
             if cfg.mask_proto_coeff_diversity_loss:
@@ -511,6 +625,10 @@ class MultiBoxLoss(nn.Module):
             num_pos = proto_coef.size(0)
             mask_t = downsampled_masks[:, :, pos_idx_t]
 
+            # Load the preselected bases
+            bases = wrapper.get_bases()
+
+            # 需验证： num_pos 和 idx_t[idx] 的 size 是一样的 - 并不是
             # Size: [mask_h, mask_w, num_pos]
             pred_masks = proto_masks @ proto_coef.t()
             pred_masks = cfg.mask_proto_mask_activation(pred_masks)

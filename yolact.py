@@ -398,31 +398,31 @@ class Yolact(nn.Module):
         if cfg.freeze_bn:
             self.freeze_bn()
 
-        # # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
-        # if cfg.mask_type == mask_type.direct:
-        #     cfg.mask_dim = cfg.mask_size ** 2
-        # elif cfg.mask_type == mask_type.lincomb:
-        #     if cfg.mask_proto_use_grid:
-        #         self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
-        #         self.num_grids = self.grid.size(0)
-        #     else:
-        #         self.num_grids = 0
-        #
-        #     self.proto_src = cfg.mask_proto_src
-        #
-        #     if self.proto_src is None:
-        #         in_channels = 3
-        #     elif cfg.fpn is not None:
-        #         in_channels = cfg.fpn.num_features
-        #     else:
-        #         in_channels = self.backbone.channels[self.proto_src]
-        #     in_channels += self.num_grids
-        #
-        #     # The include_last_relu=false here is because we might want to change it to another function
-        #     self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
-        #
-        #     if cfg.mask_proto_bias:
-        #         cfg.mask_dim += 1
+        # Compute mask_dim here and add it back to the config. Make sure Yolact's constructor is called early!
+        if cfg.mask_type == mask_type.direct:
+            cfg.mask_dim = cfg.mask_size ** 2
+        elif cfg.mask_type == mask_type.lincomb:
+            if cfg.mask_proto_use_grid:
+                self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
+                self.num_grids = self.grid.size(0)
+            else:
+                self.num_grids = 0
+
+            self.proto_src = cfg.mask_proto_src
+
+            if self.proto_src is None:
+                in_channels = 3
+            elif cfg.fpn is not None:
+                in_channels = cfg.fpn.num_features
+            else:
+                in_channels = self.backbone.channels[self.proto_src]
+            in_channels += self.num_grids
+
+            # The include_last_relu=false here is because we might want to change it to another function
+            self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
+
+            if cfg.mask_proto_bias:
+                cfg.mask_dim += 1
 
         self.selected_layers = cfg.backbone.selected_layers
         src_channels = self.backbone.channels

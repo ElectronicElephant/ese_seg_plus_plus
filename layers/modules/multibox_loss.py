@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from ..box_utils import match, log_sum_exp, decode, center_size, crop
+from ..box_utils import match, log_sum_exp, decode, center_size, crop, crop_gt_mask
+import numpy as np
 
 from data import cfg, mask_type, activation_func
 
@@ -80,11 +81,10 @@ class MultiBoxLoss(nn.Module):
         #                 Shape: [batch, mask_h, mask_w, mask_dim]
 
         # Additional information for mask_data:
-        # pos_mask_data = mask_data[idx, cur_pos_idx_squeezed, :]
-        # proto_masks = proto_data[idx]
-        # proto_coef = mask_data[idx, cur_pos, :]
+        #   pos_mask_data = mask_data[idx, cur_pos_idx_squeezed, :]
+        #   proto_masks = proto_data[idx]
+        #   proto_coef = mask_data[idx, cur_pos, :]
         # 所以 mask_data 应当就是 proto_coef
-
 
         loc_data = predictions['loc']
         conf_data = predictions['conf']
@@ -219,7 +219,7 @@ class MultiBoxLoss(nn.Module):
             elif cfg.mask_type == mask_type.lincomb:
                 losses.update(
                     self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, wrapper, masks, gt_box_t,
-                                           inst_data, labels))
+                                           inst_data, labels, truths))
                 #     loc_t[idx]  = loc    # [num_priors,4] encoded offsets to learn
                 #     conf_t[idx] = conf   # [num_priors] top class label for each prior
                 #     idx_t[idx]  = best_truth_idx # [num_priors] indices for lookup
@@ -242,13 +242,14 @@ class MultiBoxLoss(nn.Module):
         else:
             losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
-        # These losses also don't depend on anchors
-        if cfg.use_class_existence_loss:
-            # False
-            losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
-        if cfg.use_semantic_segmentation_loss:
-            # True by default
-            losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
+        # # These losses also don't depend on anchors
+        # if cfg.use_class_existence_loss:
+        #     # False
+        #     losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
+        # if cfg.use_semantic_segmentation_loss:
+        #     # True by default
+        #     # Changed to False
+        #     losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
 
         # Divide all losses by the number of positives.
         # Don't do it for loss[P] because that doesn't depend on the anchors.
@@ -492,7 +493,7 @@ class MultiBoxLoss(nn.Module):
         return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
 
     def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, wrapper, masks, gt_box_t, inst_data, labels,
-                          interpolation_mode='bilinear'):
+                          truths, interpolation_mode='bilinear'):
         """
 
         :param pos:
@@ -505,14 +506,14 @@ class MultiBoxLoss(nn.Module):
         :param gt_box_t:
         :param inst_data:
         :param labels: A Python-List!!!
+        :param truths: GT BBOX!!!
         :param interpolation_mode:
         :return:
         """
         # mask_h = proto_data.size(1)
         # mask_w = proto_data.size(2)
         # 推测 proto_data 的 shape 是 (batch_size, h, w)
-        mask_h, mask_w = 550, 550
-        # 需要验证
+        mask_h, mask_w = 138, 138
         # 默认配置下 proto_data.size 为 torch.Size([1, 138, 138, 32])
         # mask_data.size() torch.Size([1, 19248, 32])
 
@@ -524,20 +525,6 @@ class MultiBoxLoss(nn.Module):
         #          [0.7971, 0.2935, 0.9717, 0.9171],
         #          [0.7971, 0.2935, 0.9717, 0.9171],
         #          [0.7971, 0.2935, 0.9717, 0.9171]]]), gt_box_t.size() torch.Size([1, 19248, 4])
-        # gt_box_t tensor([[[0., 0., 1., 1.],
-        #          [0., 0., 1., 1.],
-        #          [0., 0., 1., 1.],
-        #          ...,
-        #          [0., 0., 1., 1.],
-        #          [0., 0., 1., 1.],
-        #          [0., 0., 1., 1.]]]), gt_box_t.size() torch.Size([1, 19248, 4])
-        # gt_box_t tensor([[[0.5586, 0.1830, 0.8400, 0.7821],
-        #          [0.5586, 0.1830, 0.8400, 0.7821],
-        #          [0.5586, 0.1830, 0.8400, 0.7821],
-        #          ...,
-        #          [0.5586, 0.1830, 0.8400, 0.7821],
-        #          [0.5586, 0.1830, 0.8400, 0.7821],
-        #          [0.5586, 0.1830, 0.8400, 0.7821]]]), gt_box_t.size() torch.Size([1, 19248, 4])
 
         process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
 
@@ -549,37 +536,6 @@ class MultiBoxLoss(nn.Module):
         loss_d = 0  # Coefficient diversity loss
 
         for idx in range(mask_data.size(0)):  # 也即是 batch size --- confirmed
-            with torch.no_grad():
-                # 似乎作用是把 GT mask downsample 到网络输出大小 - 550 by 550 by default [有问题]
-                # masks[idx].size() torch.Size([5, 550, 550]) -> downsampled_masks.size() torch.Size([138, 138, 5])
-                # 5 应该是每张图片中 seg 的数量
-                downsampled_masks = F.interpolate(masks[idx].unsqueeze(0), (mask_h, mask_w),
-                                                  mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
-
-                if cfg.mask_proto_binarize_downsampled_gt:
-                    downsampled_masks = downsampled_masks.gt(0.5).float()
-
-                if cfg.mask_proto_remove_empty_masks:
-                    # Get rid of gt masks that are so small they get downsampled away
-                    very_small_masks = (downsampled_masks.sum(dim=(0, 1)) <= 0.0001)
-                    for i in range(very_small_masks.size(0)):
-                        if very_small_masks[i]:
-                            pos[idx, idx_t[idx] == i] = 0
-
-                if cfg.mask_proto_reweight_mask_loss:
-                    # Ensure that the gt is binary
-                    if not cfg.mask_proto_binarize_downsampled_gt:
-                        bin_gt = downsampled_masks.gt(0.5).float()
-                    else:
-                        bin_gt = downsampled_masks
-
-                    gt_foreground_norm = bin_gt / (torch.sum(bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-                    gt_background_norm = (1 - bin_gt) / (torch.sum(1 - bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-
-                    mask_reweighting = gt_foreground_norm * cfg.mask_proto_reweight_coeff + gt_background_norm
-                    mask_reweighting *= mask_h * mask_w
-
             cur_pos = pos[idx]
             pos_idx_t = idx_t[idx, cur_pos]
             # pos tensor([[False, False, False,  ..., False, False, False]]),
@@ -597,9 +553,25 @@ class MultiBoxLoss(nn.Module):
             if pos_idx_t.size(0) == 0:
                 continue
 
+            with torch.no_grad():
+                # 似乎作用是把 GT mask downsample 到网络输出大小 - 138 by 138
+                # masks[idx].size() torch.Size([5, 550, 550]) -> downsampled_masks.size() torch.Size([138, 138, 5])
+                # 5 应该是每张图片中 seg 的数量
+                # downsampled_masks = F.interpolate(masks[idx].unsqueeze(0), (mask_h, mask_w),
+                #                                   mode=interpolation_mode, align_corners=False).squeeze(0)
+                # # ([5, 138, 138])
+                # downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
+                # # ([138, 138, 5])
+
+                # downsampled_masks = masks[idx].permute(1, 2, 0).contiguous()
+                # should be [550, 550, 5]
+                # print(f"downsampled_masks {downsampled_masks.size()}")
+                downsampled_masks = crop_gt_mask(masks[idx], pos_gt_box_t, 550)
+
+                if cfg.mask_proto_binarize_downsampled_gt:
+                    downsampled_masks = downsampled_masks.gt(0.5).float()
+
             # proto_masks = proto_data[idx]
-            # bases = wrapper.get_bases(idx_t[idx])  # 有问题： idx 并不是 cat_id [Deprecated]
-            bases = wrapper.get_bases(labels[idx_t[idx]])  # 验证 pending
             proto_coef = mask_data[idx, cur_pos, :]
 
             if cfg.mask_proto_coeff_diversity_loss:
@@ -626,35 +598,53 @@ class MultiBoxLoss(nn.Module):
             mask_t = downsampled_masks[:, :, pos_idx_t]
 
             # Load the preselected bases
-            bases = wrapper.get_bases()
+            gt_bases = np.zeros((truths.size(0), 64, 64, 50))
+            # print(f"labels {labels}, truths.size {truths.size()}")
+            for truth_id in range(truths.size(0)):
+                current_cat_id = labels[idx][truth_id].item()
+                if current_cat_id == 0:
+                    # print('id 0 detected!')
+                    # 最好确定一下 0 是不是真的就是 bg
+                    continue
+                gt_bases[truth_id] = wrapper.get_bases(current_cat_id)
+            gt_bases = torch.from_numpy(gt_bases)[idx].float().to(proto_coef.device)
+            # [idx] is needed due to the batch_size problem
+            # gt_bases is of size [64, 64, 50]
+            # print(f"gt_bases.size {gt_bases.size()}")
 
-            # 需验证： num_pos 和 idx_t[idx] 的 size 是一样的 - 并不是
+            # pos_idx_t tensor([0, 0, 0, 0, 1, 0]), pos_idx_t.size torch.Size([6])
+            # proto_masks.size torch.Size([138, 138, 50])
+            # proto_coef.size torch.Size([6, 50])
+            # proto_coef.t.size torch.Size([50, 6])
+
             # Size: [mask_h, mask_w, num_pos]
-            pred_masks = proto_masks @ proto_coef.t()
+            # pred_masks = proto_masks @ proto_coef.t()
+
+            pred_masks = gt_bases @ proto_coef.t()
+
+            # [脑子瓦特了写法...]
+            # pred_masks = np.zeros((64, 64, len(pos_idx_t)))
+            # for i in range(len(pos_idx_t)):
+            #     pred_masks[:, :, i] = gt_bases[truths[pos_idx_t[i]]] @ np.tile(proto_coef[i],
+            #                                                                    (len(pos_idx_t), 1)).transpose()
+
             pred_masks = cfg.mask_proto_mask_activation(pred_masks)
 
-            if cfg.mask_proto_double_loss:
-                if cfg.mask_proto_mask_activation == activation_func.sigmoid:
-                    pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='sum')
-                else:
-                    pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='sum')
+            # if cfg.mask_proto_crop:
+            #     pred_masks = crop(pred_masks, pos_gt_box_t)
 
-                loss_m += cfg.mask_proto_double_loss_alpha * pre_loss
-
-            if cfg.mask_proto_crop:
-                pred_masks = crop(pred_masks, pos_gt_box_t)
+            # 验证： mask_t 的 size 和 pred_masks 的 size
+            # pred_masks before crop torch.Size([138, 138, 11])
+            # pred_masks after  crop torch.Size([138, 138, 11])
+            # mask_t                 torch.Size([138, 138, 11])
+            # 所以，直接用 crop 去裁剪 mask_t
+            # 错误！！！ 此 crop 非彼 crop
+            # mask_t_cropped = crop(mask_t, pos_gt_box_t, 1, 64)
 
             if cfg.mask_proto_mask_activation == activation_func.sigmoid:
                 pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
             else:
                 pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='none')
-
-            if cfg.mask_proto_normalize_mask_loss_by_sqrt_area:
-                gt_area = torch.sum(mask_t, dim=(0, 1), keepdim=True)
-                pre_loss = pre_loss / (torch.sqrt(gt_area) + 0.0001)
-
-            if cfg.mask_proto_reweight_mask_loss:
-                pre_loss = pre_loss * mask_reweighting[:, :, pos_idx_t]
 
             if cfg.mask_proto_normalize_emulate_roi_pooling:
                 weight = mask_h * mask_w if cfg.mask_proto_crop else 1
@@ -670,8 +660,5 @@ class MultiBoxLoss(nn.Module):
             loss_m += torch.sum(pre_loss)
 
         losses = {'M': loss_m * cfg.mask_alpha / mask_h / mask_w}
-
-        if cfg.mask_proto_coeff_diversity_loss:
-            losses['D'] = loss_d
 
         return losses

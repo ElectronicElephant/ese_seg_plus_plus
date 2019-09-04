@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import torch
 from utils import timer
+import torch.nn.functional as F
 
 from data import cfg
 
@@ -132,7 +133,7 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
     decoded_priors = decode(loc_data, priors, cfg.use_yolo_regressors) if cfg.use_prediction_matching else point_form(priors)
-    
+
     # Size [num_objects, num_priors]
     overlaps = jaccard(truths, decoded_priors) if not cfg.use_change_matching else change(truths, decoded_priors)
 
@@ -218,7 +219,7 @@ def encode(matched, priors, use_yolo_regressors:bool=False):
         g_wh = torch.log(g_wh) / variances[1]
         # return target for smooth_l1_loss
         loc = torch.cat([g_cxcy, g_wh], 1)  # [num_priors,4]
-        
+
     return loc
 
 @torch.jit.script
@@ -259,13 +260,13 @@ def decode(loc, priors, use_yolo_regressors:bool=False):
         boxes = point_form(boxes)
     else:
         variances = [0.1, 0.2]
-        
+
         boxes = torch.cat((
             priors[:, :2] + loc[:, :2] * variances[0] * priors[:, 2:],
             priors[:, 2:] * torch.exp(loc[:, 2:] * variances[1])), 1)
         boxes[:, :2] -= boxes[:, 2:] / 2
         boxes[:, 2:] += boxes[:, :2]
-    
+
     return boxes
 
 
@@ -304,7 +305,7 @@ def sanitize_coordinates(_x1, _x2, img_size:int, padding:int=0, cast:bool=True):
 
 
 @torch.jit.script
-def crop(masks, boxes, padding:int=1):
+def crop(masks, boxes, padding:int=1, size:int=0):
     """
     "Crop" predicted masks by zeroing out everything not in the predicted bbox.
     Vectorized by Chong (thanks Chong).
@@ -313,21 +314,55 @@ def crop(masks, boxes, padding:int=1):
         - masks should be a size [h, w, n] tensor of masks
         - boxes should be a size [n, 4] tensor of bbox coords in relative point form
     """
+
     h, w, n = masks.size()
+
+    if size != 0:
+        h, w = size, size
+
     x1, x2 = sanitize_coordinates(boxes[:, 0], boxes[:, 2], w, padding, cast=False)
     y1, y2 = sanitize_coordinates(boxes[:, 1], boxes[:, 3], h, padding, cast=False)
 
     rows = torch.arange(w, device=masks.device, dtype=x1.dtype).view(1, -1, 1).expand(h, w, n)
     cols = torch.arange(h, device=masks.device, dtype=x1.dtype).view(-1, 1, 1).expand(h, w, n)
-    
+
     masks_left  = rows >= x1.view(1, 1, -1)
     masks_right = rows <  x2.view(1, 1, -1)
     masks_up    = cols >= y1.view(1, 1, -1)
     masks_down  = cols <  y2.view(1, 1, -1)
-    
+
     crop_mask = masks_left * masks_right * masks_up * masks_down
-    
+
     return masks * crop_mask.float()
+
+
+def crop_gt_mask(masks, boxes, size=64):
+    """
+        输入 [x, 550, 550]
+        输出 [64, 64, x]
+        Args:
+        - masks should be a size [h, w, n] tensor of masks
+        - boxes should be a size [n, 4] tensor of bbox coords in relative point form
+    """
+    x1, x2 = sanitize_coordinates(boxes[:, 0], boxes[:, 2], size)
+    y1, y2 = sanitize_coordinates(boxes[:, 1], boxes[:, 3], size)
+
+    # print(f"x1 {x1.size()} {x1}")
+
+    new_masks = torch.zeros((masks.size(0), 64, 64))
+
+    for i in range(masks.size(0)):
+        temp_mask = masks[i, x1[i]:x2[i], y1[i]:y2[i]]
+        # print(f"temp_mask {temp_mask.size()}")
+        temp_mask = F.interpolate(temp_mask.unsqueeze(0).unsqueeze(0), (64, 64),
+                                  mode='bilinear', align_corners=False).squeeze(0).squeeze(0)
+        # print(f"temp_mask {temp_mask.size()}")
+        new_masks[i] = temp_mask.data
+
+    new_masks = new_masks.permute(1, 2, 0).contiguous()
+    # print(f"new_masks {new_masks.size()}")
+
+    return new_masks
 
 
 
